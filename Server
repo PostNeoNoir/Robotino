@@ -34,7 +34,7 @@ class MotionFuzzyLogic:
 
     def _define_variables(self):
         rng_dist = np.arange(0, 40, self.step)
-        rng_angle = np.arange(-220, 220, self.step)
+        rng_angle = np.arange(-210, 210, self.step)
         rng_speed = np.arange(100, 240, self.step)
 
         self.inFL = ctrl.Antecedent(rng_dist, 'FL')
@@ -47,24 +47,24 @@ class MotionFuzzyLogic:
         self.outDirection = ctrl.Consequent(rng_angle, 'Direction')
 
         for sensor in [self.inFL, self.inBR, self.inFR, self.inBL]:
-            sensor['Near'] = fuzz.trapmf(sensor.universe, [0, 0, 5, 10])
-            sensor['Mid'] = fuzz.trapmf(sensor.universe, [5, 10, 20, 30])
-            sensor['Far'] = fuzz.trapmf(sensor.universe, [20, 30, 40, 40])
+            sensor['Near'] = fuzz.trapmf(sensor.universe, [0, 0, 4, 8])
+            sensor['Mid'] = fuzz.trapmf(sensor.universe, [4, 8, 20, 24])
+            sensor['Far'] = fuzz.trapmf(sensor.universe, [20, 24, 40, 40])
 
         sectors = {
-            'BR': [-220, -137, -133, -47],
-            'FR': [-133, -47, -43, 43],
-            'FL': [-43, 43, 47, 133],
-            'BL': [47, 133, 137, 220]
+            'BR': [-210, -139, -131, -49],
+            'FR': [-131, -49, -41, 41],
+            'FL': [-41, 41, 49, 131],
+            'BL': [49, 131, 139, 210]
         }
 
         for label, points in sectors.items():
             self.inBeta[label] = fuzz.trapmf(self.inBeta.universe, points)
             self.outDirection[label] = fuzz.trapmf(self.outDirection.universe, points)
 
-        self.outSpeed['Slow'] = fuzz.trapmf(self.outSpeed.universe, [100, 100, 120, 140])
-        self.outSpeed['Medium'] = fuzz.trapmf(self.outSpeed.universe, [120, 140, 160, 200])
-        self.outSpeed['Fast'] = fuzz.trapmf(self.outSpeed.universe, [160, 200, 220, 220])
+        self.outSpeed['Slow'] = fuzz.trapmf(self.outSpeed.universe, [100, 100, 110, 120])
+        self.outSpeed['Medium'] = fuzz.trapmf(self.outSpeed.universe, [110, 120, 175, 215])
+        self.outSpeed['Fast'] = fuzz.trapmf(self.outSpeed.universe, [175, 215, 220, 220])
 
     def _generate_rules(self):
         r = ctrl.Rule
