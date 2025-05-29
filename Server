@@ -1,0 +1,132 @@
+import socket
+import json
+import numpy as np
+import skfuzzy as fuzz
+from skfuzzy import control as ctrl
+
+# Настройка TCP-сервера
+HOST = "192.168.0.100"
+PORT = 10070
+
+tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+tcp_server.bind((HOST, PORT))
+tcp_server.listen(1)
+print(f"Сервер запущен: {HOST}:{PORT}")
+
+
+class MotionFuzzyLogic:
+    def __init__(self):
+        self.step = 0.5
+        self._define_variables()
+        self._generate_rules()
+        print("Fuzzy-модель инициализирована.")
+
+    def apply_inputs(self, fl, br, fr, bl, beta):
+        self.sim.input['FL'] = fl
+        self.sim.input['BR'] = br
+        self.sim.input['FR'] = fr
+        self.sim.input['BL'] = bl
+        self.sim.input['Beta'] = beta
+
+    def get_decision(self):
+        self.sim.compute()
+        return self.sim.output['Speed'], self.sim.output['Direction']
+
+    def _define_variables(self):
+        rng_dist = np.arange(0, 40, self.step)
+        rng_angle = np.arange(-220, 220, self.step)
+        rng_speed = np.arange(100, 240, self.step)
+
+        self.inFL = ctrl.Antecedent(rng_dist, 'FL')
+        self.inBR = ctrl.Antecedent(rng_dist, 'BR')
+        self.inFR = ctrl.Antecedent(rng_dist, 'FR')
+        self.inBL = ctrl.Antecedent(rng_dist, 'BL')
+        self.inBeta = ctrl.Antecedent(rng_angle, 'Beta')
+
+        self.outSpeed = ctrl.Consequent(rng_speed, 'Speed')
+        self.outDirection = ctrl.Consequent(rng_angle, 'Direction')
+
+        for sensor in [self.inFL, self.inBR, self.inFR, self.inBL]:
+            sensor['Near'] = fuzz.trapmf(sensor.universe, [0, 0, 5, 10])
+            sensor['Mid'] = fuzz.trapmf(sensor.universe, [5, 10, 20, 30])
+            sensor['Far'] = fuzz.trapmf(sensor.universe, [20, 30, 40, 40])
+
+        sectors = {
+            'BR': [-220, -137, -133, -47],
+            'FR': [-133, -47, -43, 43],
+            'FL': [-43, 43, 47, 133],
+            'BL': [47, 133, 137, 220]
+        }
+
+        for label, points in sectors.items():
+            self.inBeta[label] = fuzz.trapmf(self.inBeta.universe, points)
+            self.outDirection[label] = fuzz.trapmf(self.outDirection.universe, points)
+
+        self.outSpeed['Slow'] = fuzz.trapmf(self.outSpeed.universe, [100, 100, 120, 140])
+        self.outSpeed['Medium'] = fuzz.trapmf(self.outSpeed.universe, [120, 140, 160, 200])
+        self.outSpeed['Fast'] = fuzz.trapmf(self.outSpeed.universe, [160, 200, 220, 220])
+
+    def _generate_rules(self):
+        r = ctrl.Rule
+
+        def all_far(): return (
+            self.inFL['Far'] & self.inBR['Far'] &
+            self.inFR['Far'] & self.inBL['Far']
+        )
+
+        rules = [
+            r(all_far() & self.inBeta['FL'], (self.outSpeed['Slow'], self.outDirection['FL'])),
+            r(all_far() & self.inBeta['FR'], (self.outSpeed['Slow'], self.outDirection['FR'])),
+            r(all_far() & self.inBeta['BR'], (self.outSpeed['Slow'], self.outDirection['BR'])),
+            r(all_far() & self.inBeta['BL'], (self.outSpeed['Slow'], self.outDirection['BL'])),
+
+            r(self.inBeta['FL'] & (self.inBL['Mid'] | self.inFL['Mid'] | self.inBR['Mid']),
+              (self.outSpeed['Medium'], self.outDirection['FR'])),
+            r(self.inBeta['FR'] & (self.inFL['Mid'] | self.inBL['Mid'] | self.inFR['Mid']),
+              (self.outSpeed['Medium'], self.outDirection['BR'])),
+            r(self.inBeta['BR'] & (self.inFL['Mid'] | self.inFR['Mid'] | self.inBR['Mid']),
+              (self.outSpeed['Medium'], self.outDirection['BL'])),
+            r(self.inBeta['BL'] & (self.inFR['Mid'] | self.inBL['Mid'] | self.inBR['Mid']),
+              (self.outSpeed['Medium'], self.outDirection['FL'])),
+
+            r(self.inBeta['FL'] & (self.inBL['Near'] | self.inFL['Near'] | self.inBR['Near']),
+              (self.outSpeed['Fast'], self.outDirection['FR'])),
+            r(self.inBeta['FR'] & (self.inFL['Near'] | self.inBL['Near'] | self.inFR['Near']),
+              (self.outSpeed['Fast'], self.outDirection['BR'])),
+            r(self.inBeta['BR'] & (self.inFL['Near'] | self.inFR['Near'] | self.inBR['Near']),
+              (self.outSpeed['Fast'], self.outDirection['BL'])),
+            r(self.inBeta['BL'] & (self.inFR['Near'] | self.inBL['Near'] | self.inBR['Near']),
+              (self.outSpeed['Fast'], self.outDirection['FL'])),
+        ]
+
+        model = ctrl.ControlSystem(rules)
+        self.sim = ctrl.ControlSystemSimulation(model)
+
+
+# Запуск логики
+fuzzy_engine = MotionFuzzyLogic()
+
+print("Ожидание подключения клиента...")
+while True:
+    conn, addr = tcp_server.accept()
+    print(f"Подключён клиент: {addr}")
+    try:
+        while True:
+            raw = conn.recv(1024).decode()
+            if not raw:
+                break
+            packet = json.loads(raw)
+            fuzzy_engine.apply_inputs(
+                packet["Dis_f_l"],
+                packet["Dis_b_r"],
+                packet["Dis_f_r"],
+                packet["Dis_b_l"],
+                packet["beta_in"]
+            )
+            v, a = fuzzy_engine.get_decision()
+            response = json.dumps({"V": round(v, 3), "alfa_out": round(a, 3)})
+            conn.send(response.encode())
+    except (ConnectionResetError, BrokenPipeError):
+        print("Клиент отключён.")
+    finally:
+        conn.close()
