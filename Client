@@ -1,0 +1,128 @@
+import socket
+import json
+import math
+import sys
+import io
+
+# Перехват stdout/stderr для отладки
+sys.stdout = io.StringIO()
+sys.stderr = io.StringIO()
+
+SERVER_IP = "192.168.0.100"
+SERVER_PORT = 10070
+
+sock = None
+goal_index = 1
+odometry_initialized = True
+
+
+def angle_to_target(x_now, y_now, x_dest, y_dest):
+    """Вычисляет угол в градусах от текущей точки к цели."""
+    delta_x = x_dest - x_now
+    delta_y = y_dest - y_now
+    angle = math.degrees(math.atan2(delta_y, delta_x))
+    return (angle + 180) % 360 - 180
+
+
+def euclidean_distance(x1, y1, x2, y2):
+    """Вычисляет расстояние между двумя точками."""
+    return math.hypot(x2 - x1, y2 - y1)
+
+
+def establish_connection():
+    global sock
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((SERVER_IP, SERVER_PORT))
+        print(f"Connection established with {SERVER_IP}:{SERVER_PORT}")
+    except Exception as err:
+        print(f"Connection failed: {err}")
+        sys.exit(1)
+
+
+def initialize(robot_interface):
+    """Инициализация соединения и переменных управления."""
+    robot_interface.writeFloat(1, 0.0)  # Скорость
+    robot_interface.writeFloat(2, 0.0)  # Угол
+    robot_interface.writeFloat(3, goal_index)  # Цель
+    establish_connection()
+
+
+def execute_step(robot_interface):
+    """Один шаг управления: сбор данных, отправка, приём, запись."""
+    global goal_index, odometry_initialized
+
+    if odometry_initialized:
+        robot_interface.writeFloat(4, odometry_initialized)
+        odometry_initialized = False
+
+    precision = 3
+    try:
+        print("Beginning step execution...")
+
+        # Считывание координат
+        coords = {
+            "x": round(robot_interface.readFloat(5), precision),
+            "y": round(robot_interface.readFloat(6), precision),
+            "tx": round(robot_interface.readFloat(7), precision),
+            "ty": round(robot_interface.readFloat(8), precision)
+        }
+        print("Current & Target coordinates:", coords)
+
+        beta_angle = angle_to_target(coords["x"], coords["y"], coords["tx"], coords["ty"])
+
+        if euclidean_distance(coords["x"], coords["y"], coords["tx"], coords["ty"]) < 20:
+            goal_index += 1
+            if goal_index == 5:
+                goal_index = 1
+                # Возможное отключение после всех целей
+                # sock.close()
+
+        sensors = {
+            "Dis_f_l": round(robot_interface.readFloat(1), precision),
+            "Dis_b_l": round(robot_interface.readFloat(2), precision),
+            "Dis_b_r": round(robot_interface.readFloat(3), precision),
+            "Dis_f_r": round(robot_interface.readFloat(4), precision),
+            "beta_in": round(beta_angle, 3)
+        }
+
+        # Отправка данных на сервер
+        payload = json.dumps(sensors)
+        sock.sendall(payload.encode("utf-8"))
+        print(f"Sent: {payload}")
+
+        # Получение ответа
+        reply = sock.recv(1024).decode()
+        print("Received:", reply)
+        response = json.loads(reply)
+
+        v = response.get("V", 0.0)
+        alpha = response.get("alfa_out", 0.0)
+
+        # Запись результата в Robotino
+        robot_interface.writeFloat(1, v)
+        robot_interface.writeFloat(2, alpha)
+        robot_interface.writeFloat(3, goal_index)
+
+    except json.JSONDecodeError as jerr:
+        print(f"JSON parsing error: {jerr}")
+    except socket.error as serr:
+        print(f"Socket issue: {serr}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+
+
+def shutdown(robot_interface):
+    """Завершение работы и закрытие соединения."""
+    print("Shutting down...")
+    if sock:
+        try:
+            sock.close()
+            print("Connection closed.")
+        except socket.error as err:
+            print(f"Close error: {err}")
+
+
+def release(robot_interface):
+    """Очистка ресурсов (если необходимо)."""
+    print("Cleaning up...")
