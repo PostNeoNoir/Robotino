@@ -4,7 +4,6 @@ import math
 import sys
 import io
 
-# Перехват stdout/stderr для отладки
 sys.stdout = io.StringIO()
 sys.stderr = io.StringIO()
 
