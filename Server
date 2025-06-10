@@ -1,132 +1,208 @@
-import socket
 import json
+import socket
 import numpy as np
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 
-# Настройка TCP-сервера
-HOST = "192.168.0.100"
-PORT = 10070
+# Создание сервера
+SERVER_IP = "192.168.0.100"  # IP
+SERVER_PORT = 10049  # Порт
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.bind((SERVER_IP, SERVER_PORT))
+print(f"Server created | {SERVER_IP}:{SERVER_PORT}")
+server.listen(1)
 
-tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-tcp_server.bind((HOST, PORT))
-tcp_server.listen(1)
-print(f"Сервер запущен: {HOST}:{PORT}")
 
-
-class MotionFuzzyLogic:
+class RobotinoControlSystem():
+    # Функция создания нового класса
     def __init__(self):
-        self.step = 0.5
-        self._define_variables()
-        self._generate_rules()
-        print("Fuzzy-модель инициализирована.")
+        self.precision_of_ranges = 0.5  # Точность разметки на диапазонах
+        self._make_inputs_outputs() #создает входные и выходные переменные нечеткой логики
+        self._make_rules_and_control_system() #создает набор правил
+        print(f'Control system done!')
 
-    def apply_inputs(self, fl, br, fr, bl, beta):
-        self.sim.input['FL'] = fl
-        self.sim.input['BR'] = br
-        self.sim.input['FR'] = fr
-        self.sim.input['BL'] = bl
-        self.sim.input['Beta'] = beta
+    # Принимаем входные данные
+    def input_values(self, distance_f_l, distance_b_r, distance_f_r, distance_b_l, beta_angle_in):
+        self.sim.input['Dis_f_l'] = distance_f_l  # дистанция до препятствия спереди слева
+        self.sim.input['Dis_b_r'] = distance_b_r  # дистанция до препятствия сзади справа
+        self.sim.input['Dis_f_r'] = distance_f_r  # дистанция до препятствия спереди справа
+        self.sim.input['Dis_b_l'] = distance_b_l  # дистанция до препятствия сзади слева
+        self.sim.input['beta_in'] = beta_angle_in  # направление на цель
 
-    def get_decision(self):
-        self.sim.compute()
-        return self.sim.output['Speed'], self.sim.output['Direction']
+    # Расчет скорости и направления
+    def compute_outputs(self):
+        self.sim.compute() # запускает процесс рассуждения когда поступают новые входные данные
+        return self.sim.output['V'], self.sim.output['alfa_out'] # возвращаем скорость и угол
 
-    def _define_variables(self):
-        rng_dist = np.arange(0, 40, self.step)
-        rng_angle = np.arange(-210, 210, self.step)
-        rng_speed = np.arange(100, 240, self.step)
+    # функция определения входных и выходных параметров в нечёткой логике
+    def _make_inputs_outputs(self):
+        # Определение входных переменных (граничные значения, точность, имя)
+        self.Dist_front_left = ctrl.Antecedent(np.arange(0, 40, self.precision_of_ranges), 'Dis_f_l')
+        self.Dist_back_right = ctrl.Antecedent(np.arange(0, 40, self.precision_of_ranges), 'Dis_b_r')
+        self.Dist_front_right = ctrl.Antecedent(np.arange(0, 40, self.precision_of_ranges), 'Dis_f_r')
+        self.Dist_back_left = ctrl.Antecedent(np.arange(0, 40, self.precision_of_ranges), 'Dis_b_l')
+        self.dir_input_beta = ctrl.Antecedent(np.arange(-220, 220, self.precision_of_ranges), 'beta_in')
 
-        self.inFL = ctrl.Antecedent(rng_dist, 'FL')
-        self.inBR = ctrl.Antecedent(rng_dist, 'BR')
-        self.inFR = ctrl.Antecedent(rng_dist, 'FR')
-        self.inBL = ctrl.Antecedent(rng_dist, 'BL')
-        self.inBeta = ctrl.Antecedent(rng_angle, 'Beta')
+        # Определение выходных переменных (им граничные значения, точность, имя)
+        self.Velocity_out = ctrl.Consequent(np.arange(100, 240, self.precision_of_ranges), 'V')
+        self.dir_output_alfa = ctrl.Consequent(np.arange(-220, 220, self.precision_of_ranges), 'alfa_out')
 
-        self.outSpeed = ctrl.Consequent(rng_speed, 'Speed')
-        self.outDirection = ctrl.Consequent(rng_angle, 'Direction')
+        # Нечёткие множества для входных переменных
+        ## Фаззификация дистанции
+        self.Dist_front_left['Close'] = fuzz.trapmf(self.Dist_front_left.universe, [0, 0, 5, 10])  # определение близкой дистанции
+        self.Dist_front_left['Middle'] = fuzz.trapmf(self.Dist_front_left.universe, [5, 10, 20, 30])  # определение средней дистанции
+        self.Dist_front_left['Far'] = fuzz.trapmf(self.Dist_front_left.universe, [20, 30, 40, 40])  # определение дальней дистанции
 
-        for sensor in [self.inFL, self.inBR, self.inFR, self.inBL]:
-            sensor['Near'] = fuzz.trapmf(sensor.universe, [0, 0, 4, 8])
-            sensor['Mid'] = fuzz.trapmf(sensor.universe, [4, 8, 20, 24])
-            sensor['Far'] = fuzz.trapmf(sensor.universe, [20, 24, 40, 40])
+        self.Dist_back_right['Close'] = fuzz.trapmf(self.Dist_back_right.universe, [0, 0, 5, 10])  # определение близкой дистанции
+        self.Dist_back_right['Middle'] = fuzz.trapmf(self.Dist_back_right.universe, [5, 10, 20, 30])  # определение средней дистанции
+        self.Dist_back_right['Far'] = fuzz.trapmf(self.Dist_back_right.universe, [20, 30, 40, 40])  # определение дальней дистанции
 
-        sectors = {
-            'BR': [-210, -139, -131, -49],
-            'FR': [-131, -49, -41, 41],
-            'FL': [-41, 41, 49, 131],
-            'BL': [49, 131, 139, 210]
-        }
+        self.Dist_front_right['Close'] = fuzz.trapmf(self.Dist_front_right.universe, [0, 0, 5, 10])  # определение близкой дистанции
+        self.Dist_front_right['Middle'] = fuzz.trapmf(self.Dist_front_right.universe, [5, 10, 20, 30])  # определение средней дистанции
+        self.Dist_front_right['Far'] = fuzz.trapmf(self.Dist_front_right.universe, [20, 30, 40, 40])  # определение дальней дистанции
 
-        for label, points in sectors.items():
-            self.inBeta[label] = fuzz.trapmf(self.inBeta.universe, points)
-            self.outDirection[label] = fuzz.trapmf(self.outDirection.universe, points)
+        self.Dist_back_left['Close'] = fuzz.trapmf(self.Dist_back_left.universe, [0, 0, 5, 10])  # определение близкой дистанции
+        self.Dist_back_left['Middle'] = fuzz.trapmf(self.Dist_back_left.universe, [5, 10, 20, 30])  # определение средней дистанции
+        self.Dist_back_left['Far'] = fuzz.trapmf(self.Dist_back_left.universe, [20, 30, 40, 40])  # определение дальней дистанции
 
-        self.outSpeed['Slow'] = fuzz.trapmf(self.outSpeed.universe, [100, 100, 110, 120])
-        self.outSpeed['Medium'] = fuzz.trapmf(self.outSpeed.universe, [110, 120, 175, 215])
-        self.outSpeed['Fast'] = fuzz.trapmf(self.outSpeed.universe, [175, 215, 220, 220])
+        ## Фаззификация угла направления на целевую точку
+        self.dir_input_beta['Back-Right'] = fuzz.trapmf(self.dir_input_beta.universe, [-210, -137, -133, -49])  # определение 4 участка, 6 и 7 датчики
+        self.dir_input_beta['Front-Right'] = fuzz.trapmf(self.dir_input_beta.universe, [-131, -49, -41, 41])  # определение 1 участка, 8 и 9 датчики
+        self.dir_input_beta['Front-Left'] = fuzz.trapmf(self.dir_input_beta.universe, [-41, 41, 49, 131])  # определение 2 участка, 1, 2 и 3 датчики
+        self.dir_input_beta['Back-Left'] = fuzz.trapmf(self.dir_input_beta.universe, [49, 131, 139, 210])  # определение 3 участка, 4 и 5 датчики
 
-    def _generate_rules(self):
-        r = ctrl.Rule
+        # Нечёткие множества для выходных переменных
+        ## Фаззификация скорости
+        self.Velocity_out['Low'] = fuzz.trapmf(self.Velocity_out.universe, [100, 100, 120, 140])  # определение низкой скорости
+        self.Velocity_out['Average'] = fuzz.trapmf(self.Velocity_out.universe, [120, 140, 180, 200])  # определение средней скорости
+        self.Velocity_out['High'] = fuzz.trapmf(self.Velocity_out.universe, [180, 200, 220, 220])  # определение высокой скорости
 
-        def all_far(): return (
-            self.inFL['Far'] & self.inBR['Far'] &
-            self.inFR['Far'] & self.inBL['Far']
-        )
+        ## Фаззификация угла движения (аналогично углу beta)
+        self.dir_output_alfa['Back-Right'] = fuzz.trapmf(self.dir_output_alfa.universe, [-210, -137, -133, -49]) # определение 4 участка, 6 и 7 датчики
+        self.dir_output_alfa['Front-Right'] = fuzz.trapmf(self.dir_output_alfa.universe, [-131, -49, -41, 41]) # определение 1 участка, 8 и 9 датчики
+        self.dir_output_alfa['Front-Left'] = fuzz.trapmf(self.dir_output_alfa.universe, [-41, 41, 49, 131]) # определение 2 участка, 1, 2 и 3 датчики
+        self.dir_output_alfa['Back-Left'] = fuzz.trapmf(self.dir_output_alfa.universe, [49, 131, 139, 210]) # определение 3 участка, 4 и 5 датчики
 
-        rules = [
-            r(all_far() & self.inBeta['FL'], (self.outSpeed['Slow'], self.outDirection['FL'])),
-            r(all_far() & self.inBeta['FR'], (self.outSpeed['Slow'], self.outDirection['FR'])),
-            r(all_far() & self.inBeta['BR'], (self.outSpeed['Slow'], self.outDirection['BR'])),
-            r(all_far() & self.inBeta['BL'], (self.outSpeed['Slow'], self.outDirection['BL'])),
+    def _make_rules_and_control_system(self):
+        # Определение правил нечёткой логики
+        self.rules = [
+            # структура правил: ctrl.Rule((вход_1[значение]...), (выход_1[значение], выход_2[значение])),
 
-            r(self.inBeta['FL'] & (self.inBL['Mid'] | self.inFL['Mid'] | self.inBR['Mid']),
-              (self.outSpeed['Medium'], self.outDirection['FR'])),
-            r(self.inBeta['FR'] & (self.inFL['Mid'] | self.inBL['Mid'] | self.inFR['Mid']),
-              (self.outSpeed['Medium'], self.outDirection['BR'])),
-            r(self.inBeta['BR'] & (self.inFL['Mid'] | self.inFR['Mid'] | self.inBR['Mid']),
-              (self.outSpeed['Medium'], self.outDirection['BL'])),
-            r(self.inBeta['BL'] & (self.inFR['Mid'] | self.inBL['Mid'] | self.inBR['Mid']),
-              (self.outSpeed['Medium'], self.outDirection['FL'])),
+            ## Правила для дальней дистанции
+            ctrl.Rule((self.Dist_front_left['Far'] & self.Dist_back_right['Far'] & self.Dist_front_right['Far'] &
+                       self.Dist_back_left['Far']) & self.dir_input_beta['Front-Left'],
+                      (self.Velocity_out['Low'], self.dir_output_alfa['Front-Left'])),
 
-            r(self.inBeta['FL'] & (self.inBL['Near'] | self.inFL['Near'] | self.inBR['Near']),
-              (self.outSpeed['Fast'], self.outDirection['FR'])),
-            r(self.inBeta['FR'] & (self.inFL['Near'] | self.inBL['Near'] | self.inFR['Near']),
-              (self.outSpeed['Fast'], self.outDirection['BR'])),
-            r(self.inBeta['BR'] & (self.inFL['Near'] | self.inFR['Near'] | self.inBR['Near']),
-              (self.outSpeed['Fast'], self.outDirection['BL'])),
-            r(self.inBeta['BL'] & (self.inFR['Near'] | self.inBL['Near'] | self.inBR['Near']),
-              (self.outSpeed['Fast'], self.outDirection['FL'])),
+            ctrl.Rule((self.Dist_front_left['Far'] & self.Dist_back_right['Far'] & self.Dist_front_right['Far'] &
+                       self.Dist_back_left['Far']) & self.dir_input_beta['Front-Right'],
+                      (self.Velocity_out['Low'], self.dir_output_alfa['Front-Right'])),
+
+            ctrl.Rule((self.Dist_front_left['Far'] & self.Dist_back_right['Far'] & self.Dist_front_right['Far'] &
+                       self.Dist_back_left['Far']) & self.dir_input_beta['Back-Right'],
+                      (self.Velocity_out['Low'], self.dir_output_alfa['Back-Right'])),
+
+            ctrl.Rule((self.Dist_front_left['Far'] & self.Dist_back_right['Far'] & self.Dist_front_right['Far'] &
+                       self.Dist_back_left['Far']) & self.dir_input_beta['Back-Left'],
+                      (self.Velocity_out['Low'], self.dir_output_alfa['Back-Left'])),
+
+            ## Правила для средней дистанции
+            ctrl.Rule(self.dir_input_beta['Front-Left'] &
+                      (self.Dist_back_left['Middle'] | self.Dist_front_left['Middle']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Front-Right'])),
+
+            ctrl.Rule(self.dir_input_beta['Front-Right'] &
+                      (self.Dist_front_left['Middle'] | self.Dist_back_left['Middle']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Back-Right'])),
+
+            ctrl.Rule(self.dir_input_beta['Back-Right'] &
+                      (self.Dist_front_right['Middle'] | self.Dist_back_right['Middle']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Back-Left'])),
+
+            ctrl.Rule(self.dir_input_beta['Back-Left'] &
+                      (self.Dist_front_right['Middle'] | self.Dist_back_right['Middle']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Front-Left'])),
+
+
+
+            ## Правила для ближней дистанции
+            # Правила для движения Front-Left (вверх-влево)
+            ## Если препятствие слева (переднее-левое или заднее-левое) - уходим вправо
+            ctrl.Rule(self.dir_input_beta['Front-Left'] &
+                      (self.Dist_front_left['Close'] | self.Dist_back_left['Close']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Front-Right'])),
+
+
+
+            # Правила для движения Front-Right (вверх-вправо)
+            ## Если препятствие справа - уходим влево
+            ctrl.Rule(self.dir_input_beta['Front-Right'] &
+                      (self.Dist_front_left['Close'] | self.Dist_back_left['Close']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Back-Right'])),
+
+
+
+            # Аналогичные правила для Back-Left и Back-Right
+            ## Back-Left (назад-влево)
+            ctrl.Rule(self.dir_input_beta['Back-Left'] &
+                      (self.Dist_front_right['Close'] | self.Dist_back_right['Close']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Front-Left'])),
+
+
+
+            ## Back-Right (назад-вправо)
+            ctrl.Rule(self.dir_input_beta['Back-Right'] &
+                      (self.Dist_front_right['Close'] | self.Dist_back_right['Close']),
+                      (self.Velocity_out['Average'], self.dir_output_alfa['Back-Left'])),
+
+
         ]
 
-        model = ctrl.ControlSystem(rules)
-        self.sim = ctrl.ControlSystemSimulation(model)
+        self.control_system = ctrl.ControlSystem(self.rules)# объект системы управления на основе правил (все правила в одну системе, не принимает решения!)
+        self.sim = ctrl.ControlSystemSimulation(self.control_system) # обученный мозг, который принимает решение на основании правил
 
 
-# Запуск логики
-fuzzy_engine = MotionFuzzyLogic()
+# Создание системы управления
+control_system = RobotinoControlSystem()
 
-print("Ожидание подключения клиента...")
+print("Waiting for client connection...")
 while True:
-    conn, addr = tcp_server.accept()
-    print(f"Подключён клиент: {addr}")
+    client_socket, client_address = server.accept()
+    print(f"Client connected: {client_address}")
+
+    round_period = 3
     try:
         while True:
-            raw = conn.recv(1024).decode()
-            if not raw:
+            data = client_socket.recv(1024).decode()
+            if not data:
                 break
-            packet = json.loads(raw)
-            fuzzy_engine.apply_inputs(
-                packet["Dis_f_l"],
-                packet["Dis_b_r"],
-                packet["Dis_f_r"],
-                packet["Dis_b_l"],
-                packet["beta_in"]
-            )
-            v, a = fuzzy_engine.get_decision()
-            response = json.dumps({"V": round(v, 3), "alfa_out": round(a, 3)})
-            conn.send(response.encode())
+            # распаковка пакета данных от клиента
+            input_data = json.loads(data)
+            distance_f_l = input_data["Dis_f_l"]
+            distance_b_r = input_data["Dis_b_r"]
+            distance_f_r = input_data["Dis_f_r"]
+            distance_b_l = input_data["Dis_b_l"]
+            beta_angle_in = input_data["beta_in"]
+
+            try:
+                control_system.input_values(distance_f_l, distance_b_r, distance_f_r, distance_b_l, beta_angle_in) #передаем данные в нечеткую логику
+                velocity, alfa_angle_out = control_system.compute_outputs() #Нечеткая логика принимает решение и записыает его в velocity и alfa
+
+                # упаковка расчитанных скоростей в json отправка клиенту
+                output_data = json.dumps({"V": round(velocity, round_period), "alfa_out": round(alfa_angle_out, round_period)})
+                client_socket.send(output_data.encode())
+
+            except json.JSONDecodeError:
+                print("JSON error")
+
+            except Exception as e:
+                print(f"All error: {e}")
+
     except (ConnectionResetError, BrokenPipeError):
-        print("Клиент отключён.")
+        print("Client disconnected")
+    except Exception as e:
+        print(f"All error: {e}")
     finally:
-        conn.close()
+        try:
+            client_socket.close()
+        except:
+            pass
