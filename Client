@@ -4,124 +4,141 @@ import math
 import sys
 import io
 
+# Перенаправление вывода для отладки
 sys.stdout = io.StringIO()
 sys.stderr = io.StringIO()
 
-SERVER_IP = "192.168.0.100"
-SERVER_PORT = 10070
+HOST = "192.168.0.100"  # IP
+PORT = 10049  # Порт
 
-sock = None
-goal_index = 1
-odometry_initialized = True
-
-
-def angle_to_target(x_now, y_now, x_dest, y_dest):
-    """Вычисляет угол в градусах от текущей точки к цели."""
-    delta_x = x_dest - x_now
-    delta_y = y_dest - y_now
-    angle = math.degrees(math.atan2(delta_y, delta_x))
-    return (angle + 180) % 360 - 180
+client = None
+number_target = 1  # номер первой целевой позиции
 
 
-def euclidean_distance(x1, y1, x2, y2):
-    """Вычисляет расстояние между двумя точками."""
-    return math.hypot(x2 - x1, y2 - y1)
+# Рассчитывает угол относительно оси X в диапазоне [-180, 180] градусов, с положительным направлением по часовой стрелке.
+def calc_angle(x_cur: float,
+               y_cur: float,
+               x_goal: float,
+               y_goal: float,
+               ) -> float:
+    # рассчитывание разницы координат по X и Y
+    dx = x_goal - x_cur
+    dy = y_goal - y_cur
+
+    # Угол к цели
+    angle_to_goal = math.degrees(math.atan2(dy, dx))
+
+    # Приведение текущего угла и угла движения к цели к диапазону [-180, 180]
+    #+180 чтобы убрать отрицательную часть, потом деление с остатком % на 360 чтобы получилось значение от 0 до 360 и потом вычитает 180, которую ранее добавляли
+    #в итоге у нас угол от -180 до 180
+    angle_to_goal_normalized = (angle_to_goal + 180) % 360 - 180
+
+    return angle_to_goal_normalized
+
+# Функция расчёта дистанции. Используем для определения достижения цели
+def calc_dist(x0: float, y0: float, x1: float, y1: float) -> float:
+    # xo, y0 - нынешние координаты
+    # x1, y1 - координаты цели
+    return ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
 
 
-def establish_connection():
-    global sock
+def connect_to_server():
+    global client
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((SERVER_IP, SERVER_PORT))
-        print(f"Connection established with {SERVER_IP}:{SERVER_PORT}")
-    except Exception as err:
-        print(f"Connection failed: {err}")
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect((HOST, PORT))
+        print(f"Connected to {HOST}:{PORT}")
+    except socket.error as e:
+        print(f"Failed to connect to server: {e}")
         sys.exit(1)
 
 
-def initialize(robot_interface):
-    """Инициализация соединения и переменных управления."""
-    robot_interface.writeFloat(1, 0.0)  # Скорость
-    robot_interface.writeFloat(2, 0.0)  # Угол
-    robot_interface.writeFloat(3, goal_index)  # Цель
-    establish_connection()
+def start(RV):
+    RV.writeFloat(1, 0)  # Инициализация V (скорости движения)
+    RV.writeFloat(2, 0)  # Инициализация alfa (направления движения)
+    RV.writeFloat(3, number_target)
+
+    connect_to_server()
 
 
-def execute_step(robot_interface):
-    """Один шаг управления: сбор данных, отправка, приём, запись."""
-    global goal_index, odometry_initialized
+# Выполнить шаг: чтение входных данных, общение с сервером и запись выходов
+#   Выполняется каждый шаг
+def step(RV):
+    global number_target
+    round_period = 3
 
-    if odometry_initialized:
-        robot_interface.writeFloat(4, odometry_initialized)
-        odometry_initialized = False
-
-    precision = 3
     try:
-        print("Beginning step execution...")
-
-        # Считывание координат
-        coords = {
-            "x": round(robot_interface.readFloat(5), precision),
-            "y": round(robot_interface.readFloat(6), precision),
-            "tx": round(robot_interface.readFloat(7), precision),
-            "ty": round(robot_interface.readFloat(8), precision)
+        print('start step')
+        # Считывание данных положения
+        data_pos = {
+            "x_cur": round((RV.readFloat(5)), round_period),
+            "y_cur": round((RV.readFloat(6)), round_period),
+            "x_goal": round((RV.readFloat(7)), round_period),
+            "y_goal": round((RV.readFloat(8)), round_period),
         }
-        print("Current & Target coordinates:", coords)
 
-        beta_angle = angle_to_target(coords["x"], coords["y"], coords["tx"], coords["ty"])
 
-        if euclidean_distance(coords["x"], coords["y"], coords["tx"], coords["ty"]) < 20:
-            goal_index += 1
-            if goal_index == 5:
-                goal_index = 1
-                # Возможное отключение после всех целей
-                # sock.close()
+        beta = calc_angle(
+            data_pos['x_cur'],
+            data_pos['y_cur'],
+            data_pos['x_goal'],
+            data_pos['y_goal'],
+        )
 
-        sensors = {
-            "Dis_f_l": round(robot_interface.readFloat(1), precision),
-            "Dis_b_l": round(robot_interface.readFloat(2), precision),
-            "Dis_b_r": round(robot_interface.readFloat(3), precision),
-            "Dis_f_r": round(robot_interface.readFloat(4), precision),
-            "beta_in": round(beta_angle, 3)
+        if (calc_dist(data_pos['x_cur'], data_pos['y_cur'], data_pos['x_goal'], data_pos['y_goal'])
+                < 50):
+            number_target += 1
+            if number_target == 5:
+                number_target = 1
+                # отключение после достижения всех точек
+                # client.close()
+                # print("Disconnected from server")
+
+        # запись данных для нечёткой логики
+        data_fuzzy = {
+            "Dis_f_l": round((RV.readFloat(1)), round_period),  # дистанция до препятствия спереди слева
+            "Dis_b_l": round((RV.readFloat(2)), round_period),  # дистанция до препятствия сзади справа
+            "Dis_b_r": round((RV.readFloat(3)), round_period),  # дистанция до препятствия спереди справа
+            "Dis_f_r": round((RV.readFloat(4)), round_period),  # дистанция до препятствия сзади слева
+            "beta_in": round(beta, 3)  # Угол направления к цели
         }
 
         # Отправка данных на сервер
-        payload = json.dumps(sensors)
-        sock.sendall(payload.encode("utf-8"))
-        print(f"Sent: {payload}")
+        data_fuzzy_json = json.dumps(data_fuzzy) #перевод в строку json
+        client.sendall(data_fuzzy_json.encode('utf-8')) #перевод в байты и отправка
+        print(f"Sent: {data_fuzzy_json}")
 
-        # Получение ответа
-        reply = sock.recv(1024).decode()
-        print("Received:", reply)
-        response = json.loads(reply)
+        # Получение ответа от сервера
+        data_from_server = client.recv(1024).decode() #1024 байт за вызов recv
+        velocity_json_data = json.loads(data_from_server)
 
-        v = response.get("V", 0.0)
-        alpha = response.get("alfa_out", 0.0)
+        # Извлечение скорости и направления
+        V_from_server = velocity_json_data.get("V", 0) #пытается получить значение из velocity_json_data, если не удалось задает его 0
+        alfa_from_server = velocity_json_data.get("alfa_out", 0)
 
-        # Запись результата в Robotino
-        robot_interface.writeFloat(1, v)
-        robot_interface.writeFloat(2, alpha)
-        robot_interface.writeFloat(3, goal_index)
+        # Обновление данных для Robotino
+        RV.writeFloat(1, V_from_server)  # Установка скорости
+        RV.writeFloat(2, alfa_from_server)  # Установка угла направления
+        RV.writeFloat(3, number_target)  # Установка целевой координаты
 
-    except json.JSONDecodeError as jerr:
-        print(f"JSON parsing error: {jerr}")
-    except socket.error as serr:
-        print(f"Socket issue: {serr}")
+    except json.JSONDecodeError as e:
+        print(f"JSON error: {e}")
+    except socket.error as e:
+        print(f"Socket error: {e}")
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"Another error {e}")
 
 
-def shutdown(robot_interface):
-    """Завершение работы и закрытие соединения."""
-    print("Shutting down...")
-    if sock:
+def stop(RV):
+    print("stop")
+    if client:
         try:
-            sock.close()
-            print("Connection closed.")
-        except socket.error as err:
-            print(f"Close error: {err}")
+            client.close()
+            print("Disconnected from server")
+        except socket.error as e:
+            print(f"Error while disconnecting: {e}")
 
 
-def release(robot_interface):
-    """Очистка ресурсов (если необходимо)."""
-    print("Cleaning up...")
+def cleanup(RV):
+    """Clean up resources."""
+    print("cleanup")
